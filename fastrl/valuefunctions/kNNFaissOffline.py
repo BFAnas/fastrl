@@ -1,0 +1,152 @@
+import numpy as np
+from fastrl.valuefunctions.FAInterface import FARL
+import faiss
+from scipy.special import softmax
+
+class kNNQFaissOffline(FARL):
+
+    def __init__(self, dataset, low, high, k=1, alpha=0.3, lm=0.95):
+
+        episodes = dataset.episodes
+        num_states = sum([len(episode.observations) for episode in episodes])
+        action_size = episodes[0].action_size
+
+        # Initialize Q values for all state-action paires
+        self.Q = np.zeros((num_states, action_size), dtype=np.float32) + -100.0
+
+        # Observation dimension
+        self.dimension = int(low.shape[0])
+        self.lbounds = low
+        self.ubounds = high
+        self.cl = np.concatenate([episode.observations for episode in episodes], axis=0).astype(np.float32)
+
+        self.k = k
+        self.shape = self.cl.shape
+        self.e = np.zeros((num_states, action_size))
+
+        self.ac = []
+
+        self.knn = []
+        self.alpha = alpha
+        self.lm = lm  # good 0.95
+        self.last_state = np.zeros((1, self.shape[1]))
+
+        self.lbounds = np.array(self.lbounds)
+        self.ubounds = np.array(self.ubounds)
+
+        self.cl = np.array(self.rescale_inputs(self.cl))
+
+        print("building value function memory")
+        res = faiss.StandardGpuResources()  # use a single GPU
+        nlist = 100
+        quantizer = faiss.IndexFlatL2(self.dimension)  # the other index
+        self.index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist)
+        assert not self.index.is_trained
+        self.index.train(self.cl)
+        assert self.index.is_trained
+
+        self.index.add(self.cl)
+        self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+        print("value function memory done...")
+
+        # self.index.nprobe = 10
+
+    def actualize(self):
+        self.index.add(x=self.cl)
+
+    def ndlinspace(self, nelems):
+
+        x = np.indices(nelems).T.reshape(-1, len(nelems)) + 1.0
+
+        from_b = np.array(nelems, np.float32)
+
+        y = self.lbounds + (((x - 1) / (from_b - 1)) * (self.ubounds - self.lbounds))
+
+        return y
+
+    def random_space(self, npoints):
+        d = []
+        for l, h in zip(self.lbounds, self.ubounds):
+            d.append(np.random.uniform(l, h, (npoints, 1)))
+
+        return np.concatenate(d, 1)
+
+    def load(self, str_filename):
+        self.Q = np.load(str_filename)
+
+    def save(self, str_filename):
+        np.save(str_filename, self.Q)
+
+    def reset_traces(self):
+        self.e *= 0.0
+        # self.actualize()
+
+    def rescale_inputs(self, s):
+        return self.scale_value(np.array(s), self.lbounds, self.ubounds, -1.0, 1.0)
+
+    def scale_value(self, x, from_a, from_b, to_a, to_b):
+        return to_a + (((x - from_a) / (from_b - from_a)) * (to_b - to_a))
+
+    def get_knn_set(self, s):
+
+        if self.last_state is not None:
+
+            if np.allclose(s, self.last_state) and self.knn != []:
+                return self.knn
+
+        self.last_state = s
+        state = self.rescale_inputs(s)
+
+        d, self.knn = self.index.search(x=np.array([state]).astype(np.float32), k=self.k)
+        d = np.squeeze(d)
+
+        self.knn = np.squeeze(self.knn)
+
+        # self.ac = 1.0 / (1.0 + d)  # calculate the degree of activation
+        # self.ac /= sum(self.ac)
+        self.ac = softmax(-np.sqrt(d))
+
+        return self.knn
+
+    def calculate_knn_q_values(self, M):
+        Q_values = np.dot(np.transpose(self.Q[M]), self.ac)
+        return Q_values
+
+    def get_value(self, s, a=None):
+        """ Return the Q value of state (s) for action (a)
+        """
+        M = self.get_knn_set(s)
+
+        if a is None:
+            return self.calculate_knn_q_values(M)
+
+        return self.calculate_knn_q_values(M)[a]
+
+    def update(self, s, a, v, gamma=1.0):
+        """ update action value for action(a)
+        """
+
+        M = self.get_knn_set(s)
+
+        if self.lm > 0:
+            # cumulating traces
+            # self.e[M,a] = self.e[M,a] +  self.ac[M].flatten()
+
+            # replacing traces
+            self.e[M] = 0
+            self.e[M, a] = self.ac
+
+            td_error = v - self.get_value(s, a)
+            self.Q += self.alpha * td_error * self.e
+            self.e *= self.lm
+        else:
+            td_error = v - self.get_value(s, a)
+            self.Q[M, a] += self.alpha * td_error * self.ac
+
+    def has_population(self):
+        return True
+
+    def get_population(self):
+        pop = self.scale_value(self.cl, -1.0, 1.0, self.lbounds, self.ubounds)
+        for i in range(self.shape[0]):
+            yield pop[i]

@@ -2,4 +2,5 @@ gym
 numpy
 setuptools
 scipy
-faiss
+faiss-gpu
+d3rlpy

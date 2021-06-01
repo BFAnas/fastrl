@@ -1,4 +1,5 @@
 import gym
+import numpy as np
 
 from fastrl.valuefunctions.FAInterface import FARL as fai
 
@@ -142,6 +143,54 @@ class FARLBase:
             # update the current variables
             s = sp
 
+
+            # increment the step counter.
+            steps = steps + 1
+            if render:
+                self.Environment.render()
+
+            # if reachs the goal breaks the episode
+            if done:
+                break
+
+        return total_reward, steps
+
+    def offline_learning(self, transitions):
+        """
+        Do a one step offline learning
+
+        Args:
+            transitions (list(d3rlpy.datatset.Transtion)): transions from offline data
+            render (bool): defaults to True.
+
+        """
+        for transition in transitions:
+            observation, action, reward, next_observation, done = transition.observation, transition.action, transition.reward, transition.next_observation, transition.terminal
+
+            vp = self.Q(next_observation)
+            target_value = reward + self.gamma * max(vp) * (not done)
+            self.Q.update(observation, action, target_value)
+
+    def online_evaluation(self, maxsteps=500, render=True):
+        """ Evaluate Q online on one episode"""
+
+        s = self.Environment.reset()
+        steps = 0
+        total_reward = 0
+
+        for i in range(1, maxsteps + 1):
+
+            # selects an action using the greedy selection strategy (epsilon = 0)
+            a, v = self.SelectAction(s)
+
+            # do the selected action and get the next state
+            sp, r, done, info = self.Environment.step(a)
+
+            # observe the reward at state xp and the final state flag
+            total_reward = total_reward + r
+
+            # update the current variables
+            s = sp
 
             # increment the step counter.
             steps = steps + 1
