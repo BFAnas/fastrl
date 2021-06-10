@@ -10,7 +10,8 @@ class FARLBase:
 
         self.gamma = gamma  # discount factor
         self.Environment = env
-        self.n_actions = env.action_space.n  # number of actions
+        if isinstance(env.action_space, gym.spaces.Discrete):
+            self.n_actions = env.action_space.n  # number of actions
         self.Q = function_approximator  # the function approximator
         self.SelectAction = action_selector  # the action_selection function
         self.SelectAction.parent = self
@@ -181,7 +182,7 @@ class FARLBase:
         for i in range(1, maxsteps + 1):
 
             # selects an action using the greedy selection strategy (epsilon = 0)
-            a, v = self.SelectAction(s)
+            a = self.SelectAction(s)
 
             # do the selected action and get the next state
             sp, r, done, info = self.Environment.step(a)
@@ -202,3 +203,19 @@ class FARLBase:
                 break
 
         return total_reward, steps
+
+    def offline_learning_continous(self, transitions):
+        """
+        Do a one step offline learning
+
+        Args:
+            transitions (list(d3rlpy.datatset.Transtion)): transions from offline data
+            render (bool): defaults to True.
+
+        """
+        for transition in transitions:
+            observation, action, reward, next_observation, done = transition.observation, transition.action, transition.reward, transition.next_observation, transition.terminal
+
+            vp = self.Q(next_observation)
+            target_value = reward + self.gamma * np.amax(vp) * (not done)
+            self.Q.update(observation, action, target_value)

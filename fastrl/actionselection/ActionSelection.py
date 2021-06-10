@@ -1,3 +1,4 @@
+import numpy as np
 from numpy import *
 from numpy.random import normal
 import random as rnd
@@ -64,3 +65,22 @@ class SoftmaxActionSelection:
         a = int(np.random.choice(a=np.arange(v.shape[0], dtype=np.int), size=1, replace=False, p=probabilities))
 
         return a, v[a]
+
+class ContinousActionSelection:
+    def __init__(self, Q):
+        self.QFaiss = Q
+
+    def __call__(self, s):
+        return self.select_action(s)
+
+    def select_action(self, s):
+        knns = self.QFaiss.get_knn_set(s)
+        v = self.QFaiss.Q[knns]
+        states = [self.QFaiss.all_states[i] for i in knns]
+        s_actions = [list(self.QFaiss.get_state_knn_actions(s)) for s in states]
+        ac = self.QFaiss.ac
+        ai = np.argmax(v, axis=1)
+        best_ai = [a[i] for a, i in zip(s_actions, ai)]
+        best_ac = [self.QFaiss.all_actions[i] for i in best_ai]
+        continous_action = np.sum([i*j for i, j in zip(best_ac, ac)], axis=0)
+        return continous_action
